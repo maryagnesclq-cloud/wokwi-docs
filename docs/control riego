@@ -1,0 +1,127 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// Configuración de la red Wi-Fi virtual de Wokwi
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// Servidor Mosquitto/MQTT Público (Reemplazo virtual de la Raspberry Pi)
+const char* mqtt_server = "broker.hivemq.com"; 
+const int mqtt_port = 1883;
+
+// Definición de pines para los LEDs virtuales (Simuladores de Riego/Estado)
+const int PIN_ROJO = 5;    // Pin 5
+const int PIN_VERDE = 14;  // Equivalente a D5 en muchas placas ESP32
+const int PIN_AZUL = 12;   // Equivalente a D6 en muchas placas ESP32
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+unsigned long lastMsg = 0;
+int valorSimulado = 0;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Configurar los pines físicos/virtuales como salidas
+  pinMode(PIN_ROJO, OUTPUT);
+  pinMode(PIN_VERDE, OUTPUT);
+  pinMode(PIN_AZUL, OUTPUT);
+  
+  // Iniciar apagados
+  digitalWrite(PIN_ROJO, LOW);
+  digitalWrite(PIN_VERDE, LOW);
+  digitalWrite(PIN_AZUL, LOW);
+
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+}
+
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Conectando a ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("¡Wi-Fi conectado virtualmente!");
+  Serial.print("Dirección IP asignada: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Esta función se ejecuta cuando llega una orden digital desde Jupyter/Mosquitto
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Mensaje recibido en el tema: ");
+  Serial.print(topic);
+  Serial.print(". Contenido: ");
+  
+  String mensaje = "";
+  for (int i = 0; i < length; i++) {
+    mensaje += (char)payload[i];
+  }
+  Serial.println(mensaje);
+
+  // Lógica de control para activar los pines desde el entorno digital
+  if (String(topic) == "casa/riego/valvula") {
+    if (mensaje == "ENCENDER_ROJO") {
+      digitalWrite(PIN_ROJO, HIGH); // LED ROJO Encendido
+    } else if (mensaje == "APAGAR_ROJO") {
+      digitalWrite(PIN_ROJO, LOW);  // LED ROJO Apagado
+    } else if (mensaje == "ENCENDER_VERDE") {
+      digitalWrite(PIN_VERDE, HIGH); // LED VERDE Encendido
+    } else if (mensaje == "APAGAR_VERDE") {
+      digitalWrite(PIN_VERDE, LOW);  // LED VERDE Apagado
+    }
+  }
+}
+
+void reconnect() {
+  // Bucle hasta conseguir la reconexión con el Broker
+  while (!client.connected()) {
+    Serial.print("Intentando conexión MQTT al broker público...");
+    // Creamos un ID de cliente único para que no choque con otros usuarios del broker
+    String clientId = "ESP32Client-" + String(random(0, 10000));
+    
+    if (client.connect(clientId.c_str())) {
+      Serial.println("¡Conectado exitosamente!");
+      // Nos suscribimos al canal de órdenes digitales
+      client.subscribe("casa/riego/valvula");
+    } else {
+      Serial.print("Fallo en la conexión, rc=");
+      Serial.print(client.state());
+      Serial.println(" Intentando de nuevo en 5 segundos...");
+      delay(5000);
+    }
+  }
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  // Envío digital automático: Publica datos simulados cada 4 segundos
+  unsigned long now = millis();
+  if (now - lastMsg > 4000) {
+    lastMsg = now;
+    
+    // Simulamos una lectura de humedad de suelo que va cambiando
+    valorSimulado = random(40, 80); 
+    
+    String payload = String(valorSimulado);
+    Serial.print("Publicando dato de humedad simulado: ");
+    Serial.println(payload);
+    
+    // Enviamos el dato al canal para que Jupyter lo pueda leer y graficar
+    client.publish("casa/riego/humedad", payload.c_str());
+  }
+}
